@@ -725,7 +725,9 @@ private:
 
   // If the LRU is currently over the soft limit, returns a promise that resolves when it is
   // back under the limit.
-  kj::Maybe<kj::Promise<void>> getBackpressure();
+  kj::Maybe<kj::Promise<void>> flushIfNeeded();
+  kj::Promise<void> flushWhileOverDirtyLimit();
+  bool checkIfFlushNeeded();
 
   class GetMultiStreamImpl;
   class ForwardListStreamImpl;
