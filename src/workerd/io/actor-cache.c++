@@ -265,19 +265,17 @@ bool ActorCache::SharedLru::evictIfNeeded(Lock& lock) const {
   }
 }
 
-void ActorCache::touchEntry(Lock& lock, Entry& entry, const ReadOptions& options) {
-  if (!options.noCache) {
-    if (!entry.isDirty()) {
-      entry.isStale = false;
-      lock->remove(entry);
-      lock->add(entry);
-    }
-
-    // If this is a dirty entry previously marked no-cache, remove that mark. This results in the
-    // same end state as if the entry had been flushed and evicted before the read -- it would have
-    // been read back, and then into cache.
-    entry.noCache = false;
+void ActorCache::touchEntry(Lock& lock, Entry& entry) {
+  if (!entry.isDirty()) {
+    entry.isStale = false;
+    lock->remove(entry);
+    lock->add(entry);
   }
+
+  // If this is a dirty entry previously marked no-cache, remove that mark. This results in the
+  // same end state as if the entry had been flushed and evicted before the read -- it would have
+  // been read back, and then into cache.
+  entry.noCache = false;
 }
 
 void ActorCache::removeEntry(Lock& lock, Entry& entry) {
@@ -942,7 +940,9 @@ kj::OneOf<ActorCache::GetResultList, kj::Promise<ActorCache::GetResultList>>
          positiveCount < limit.orDefault(kj::maxValue); ++iter) {
     Entry& entry = **iter;
 
-    touchEntry(lock, entry, options);
+    if (!options.noCache) {
+      touchEntry(lock, entry);
+    }
 
     switch(entry.valueStatus) {
       case EntryValueStatus::ABSENT: {
@@ -978,7 +978,9 @@ kj::OneOf<ActorCache::GetResultList, kj::Promise<ActorCache::GetResultList>>
   if (iter != ordered.end() && iter->get()->key == endKey) {
     // We have an entry exactly at our end, it might even be a previously inserted UNKNOWN. Let's
     // touch it for freshness.
-    touchEntry(lock, **iter, options);
+    if (!options.noCache) {
+      touchEntry(lock, **iter);
+    }
   }
 
   if (storageListStart == kj::none || knownPrefixSize >= limit.orDefault(kj::maxValue)) {
@@ -1244,7 +1246,9 @@ kj::OneOf<ActorCache::GetResultList, kj::Promise<ActorCache::GetResultList>>
   if (iter != map.ordered().end() && iter->get()->key == endKey) {
     // We have an entry exactly at our end, it might even be a previously inserted UNKNOWN. Let's
     // touch it for freshness.
-    touchEntry(lock, **iter, options);
+    if (!options.noCache) {
+      touchEntry(lock, **iter);
+    }
   }
   for (; positiveCount < limit.orDefault(kj::maxValue); ) {
     if (iter == ordered.begin()) {
@@ -1269,7 +1273,9 @@ kj::OneOf<ActorCache::GetResultList, kj::Promise<ActorCache::GetResultList>>
       break;
     }
 
-    touchEntry(lock, entry, options);
+    if (!options.noCache) {
+      touchEntry(lock, entry);
+    }
 
     // Note that we need to add even negative entries to `cachedEntries` so that they override
     // whatever we read from storage later. However, they should not count against the limit.
@@ -1393,7 +1399,9 @@ kj::Own<ActorCache::Entry> ActorCache::findInCache(
   if (iter != ordered.end() && iter->get()->key == key) {
     // Found exact matching entry.
     Entry& entry = **iter;
-    touchEntry(lock, entry, options);
+    if (!options.noCache) {
+      touchEntry(lock, entry);
+    }
     return kj::atomicAddRef(entry);
   } else {
     // Key is not in the map, but we have to check for outstanding list() operations by checking
@@ -1505,7 +1513,7 @@ kj::Own<ActorCache::Entry> ActorCache::addReadResultToCache(
         //   one that coincidentally matches what we pulled off disk. However, the open transaction
         //   is still going to be committed, writing the intermediate value, so we still need to plan
         //   to write this value again in the next transaction.
-        touchEntry(lock, *slot, options);
+        touchEntry(lock, *slot);
         break;
       }
     }
