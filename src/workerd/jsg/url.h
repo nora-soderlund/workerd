@@ -33,8 +33,16 @@ public:
   bool operator==(const Url& other) const KJ_WARN_UNUSED_RESULT;
 
   enum class EquivalenceOption {
-    DEFAULT,
-    IGNORE_FRAGMENTS,
+    DEFAULT = 0,
+    // When set, the fragment/hash portion of the URL will be ignored when comparing or
+    // cloning URLs.
+    IGNORE_FRAGMENTS = 1 << 0,
+    // When set, the search portion of the URL will be ignored when comparing or cloning URLs.
+    IGNORE_SEARCH = 1 << 1,
+    // When set, the pathname portion of the URL will be normalized by percent-decoding
+    // then re-encoding the pathname. This is useful when comparing URLs that may have
+    // different, but equivalent percent-encoded paths. e.g. %66oo and foo are equivalent.
+    NORMALIZE_PATH = 1 << 2,
   };
 
   bool equal(const Url& other, EquivalenceOption option = EquivalenceOption::DEFAULT) const
@@ -87,7 +95,10 @@ public:
 
   // Copies this Url. If the option is set of EquivalenceOption::IGNORE_FRAGMENTS, the
   // copied Url will clear any fragment/hash that exists.
-  Url clone(EquivalenceOption option = EquivalenceOption::DEFAULT) KJ_WARN_UNUSED_RESULT;
+  Url clone(EquivalenceOption option = EquivalenceOption::DEFAULT) const KJ_WARN_UNUSED_RESULT;
+
+  // Resolve the input relative to this URL
+  kj::Maybe<Url> tryResolve(kj::ArrayPtr<const char> input) const KJ_WARN_UNUSED_RESULT;
 
   HostType getHostType() const;
   SchemeType getSchemeType() const;
@@ -102,6 +113,13 @@ private:
   Url(kj::Own<void> inner);
   kj::Own<void> inner;
 };
+
+constexpr Url::EquivalenceOption operator|(Url::EquivalenceOption a, Url::EquivalenceOption b) {
+  return static_cast<Url::EquivalenceOption>(static_cast<int>(a) | static_cast<int>(b));
+}
+constexpr Url::EquivalenceOption operator&(Url::EquivalenceOption a, Url::EquivalenceOption b) {
+  return static_cast<Url::EquivalenceOption>(static_cast<int>(a) & static_cast<int>(b));
+}
 
 class UrlSearchParams final {
 public:
@@ -177,5 +195,9 @@ inline kj::String KJ_STRINGIFY(const Url& url) {
 inline kj::String KJ_STRINGIFY(const UrlSearchParams& searchParams) {
   return kj::str(searchParams.toStr());
 }
+
+// Append _url to a string literal to create a parsed URL. An assert will be triggered
+// if the value cannot be parsed successfully.
+const Url operator "" _url(const char* str, size_t size) KJ_WARN_UNUSED_RESULT;
 
 }  // namespace workerd::jsg
