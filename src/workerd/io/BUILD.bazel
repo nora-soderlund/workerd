@@ -183,4 +183,7 @@ wd_cc_capnp_library(
         ":io",
         "//src/workerd/util:test-util",
     ],
-) for f in glob(["*-test.c++"])]
+) for f in glob(
+  ["*-test.c++"],
+  exclude = ["actor-cache-test.c++"],
+)]

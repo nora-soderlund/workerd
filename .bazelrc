@@ -38,6 +38,10 @@ build --host_per_file_copt='external/dawn@-Wno-shorten-64-to-32,-Wno-unneeded-in
 build --per_file_copt='external/zlib@-Wno-unknown-warning-option,-Wno-deprecated-non-prototype'
 build --host_per_file_copt='external/zlib@-Wno-unknown-warning-option,-Wnodeprecated-non-prototype'
 
+# needed for clang-18. Note that this is fixed on master/as of 05a70ef.
+build:linux --per_file_copt='external/com_google_tcmalloc@-Wno-thread-safety-reference-return'
+build:linux --host_per_file_copt='external/com_google_tcmalloc@-Wno-thread-safety-reference-return'
+
 # Enable C++20 to support std::unordered_map::contains(). Not sure why this is needed here, V8
 # is supposed to work with C++14.
 build:unix --per_file_copt='external/v8/src/compiler/graph-visualizer.cc@-std=c++20'
