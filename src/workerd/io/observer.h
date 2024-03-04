@@ -62,6 +62,12 @@ public:
     return kj::mv(client);
   }
 
+  // Used to record when a worker has a dynamic dispatch binding (Called on the dispatching side)
+  virtual void setHasDispatchBinding() {};
+
+  // Used to record what worker dispatched the current worker (Called by the dispatch target).
+  virtual void setDispatcherId(kj::Maybe<kj::String> id) {};
+
   virtual SpanParent getSpan() { return nullptr; }
 
   virtual void addedContextTask() {}
