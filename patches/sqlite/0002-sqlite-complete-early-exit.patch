@@ -1,0 +1,48 @@
+Only in sqlite-src-modified: .idea
+diff -u5 -r sqlite-src-pristine/src/complete.c sqlite-src-modified/src/complete.c
+--- sqlite-src-pristine/src/complete.c	2023-11-01 22:31:37
++++ sqlite-src-modified/src/complete.c	2024-03-07 11:44:51
+@@ -99,11 +99,14 @@
+ **
+ ** If we compile with SQLITE_OMIT_TRIGGER, all of the computation needed
+ ** to recognize the end of a trigger can be omitted.  All we have to do
+ ** is look for a semicolon that is not part of an string or comment.
+ */
+-int sqlite3_complete(const char *zSql){
++int sqlite3_complete(const char *zSql) {
++    return sqlite3_complete_inner(zSql, 0);
++}
++int sqlite3_complete_inner(const char *zSql, int earlyExit){
+   u8 state = 0;   /* Current state, using numbers defined in header comment */
+   u8 token;       /* Value of the next token */
+
+ #ifndef SQLITE_OMIT_TRIGGER
+   /* A complex statement machine used to detect the end of a CREATE TRIGGER
+@@ -253,10 +256,12 @@
+         }
+         break;
+       }
+     }
+     state = trans[state][token];
++    // If we're early exiting, seeing a single complete statement is enough to return true
++    if (earlyExit && state==1) return true;
+     zSql++;
+   }
+   return state==1;
+ }
+
+diff -u5 -r sqlite-src-pristine/src/sqlite.h.in sqlite-src-modified/src/sqlite.h.in
+--- sqlite-src-pristine/src/sqlite.h.in	2023-11-01 22:31:37
++++ sqlite-src-modified/src/sqlite.h.in	2024-03-07 11:45:33
+@@ -2774,10 +2774,11 @@
+ ** The input to [sqlite3_complete16()] must be a zero-terminated
+ ** UTF-16 string in native byte order.
+ */
+ int sqlite3_complete(const char *sql);
+ int sqlite3_complete16(const void *sql);
++int sqlite3_complete_inner(const char *sql, int earlyExit);
+
+ /*
+ ** CAPI3REF: Register A Callback To Handle SQLITE_BUSY Errors
+ ** KEYWORDS: {busy-handler callback} {busy handler}
+ ** METHOD: sqlite3
