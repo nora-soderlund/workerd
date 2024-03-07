@@ -394,29 +394,37 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
   KJ_DEFER(currentRegulator = nullptr);
   currentRegulator = regulator;
 
-  for (;;) {
-    sqlite3_stmt* result;
-    const char* tail;
+  if (multi == SINGLE) {
+    sqlite3_stmt * result;
+    const char *tail;
 
+    // Prepare the statement
     SQLITE_CALL(sqlite3_prepare_v3(db, sqlCode.begin(), sqlCode.size(), prepFlags, &result, &tail));
     SQLITE_REQUIRE(result != nullptr, "SQL code did not contain a statement.", sqlCode);
-    auto ownResult = ownSqlite(result);
 
+    // Ensure only whitespace remains
     while (*tail == ' ' || *tail == '\n') ++tail;
+    SQLITE_REQUIRE(tail == sqlCode.end(),
+                   "A prepared SQL statement must contain only one statement.", tail);
 
-    switch (multi) {
-      case SINGLE:
-        SQLITE_REQUIRE(tail == sqlCode.end(),
-            "A prepared SQL statement must contain only one statement.", tail);
-        break;
+    return ownSqlite(result);
+  } else {
+    sqlite3_stmt* result = nullptr;
+    const char* tail = sqlCode.begin();
 
-      case MULTI:
-        if (tail != sqlCode.end()) {
-          // There are more statements after this one, so execute this statement now.
+    while (tail != sqlCode.end()) {
+      sqlite3_stmt* statementResult;
+      SQLITE_CALL(sqlite3_prepare_v3(db, sqlCode.begin(), sqlCode.size(), prepFlags, &statementResult, &tail));
+
+      // If is a real statement
+      if (statementResult != nullptr) {
+        // And we've already seen a real statement
+        if (result != nullptr) {
+          // Then fully step() through what's in 'result' before returning/processing the new statement
 
           SQLITE_REQUIRE(sqlite3_bind_parameter_count(result) == 0,
-              "When executing multiple SQL statements in a single call, only the last statement "
-              "can have parameters.");
+                         "When executing multiple SQL statements in a single call, only the last statement "
+                         "can have parameters.")
 
           // Be sure to call the onWrite callback if necessary for this statement.
           KJ_IF_SOME(cb, onWriteCallback) {
@@ -429,7 +437,6 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
             }
           }
 
-          // This isn't the last statement in the code. Execute it immediately.
           int err = sqlite3_step(result);
           if (err == SQLITE_DONE) {
             // good
@@ -438,15 +445,19 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
           } else {
             SQLITE_CALL_FAILED("sqlite3_step()", err);
           }
-
-          // Reduce `sqlCode` to include only what we haven't already executed.
-          sqlCode = kj::StringPtr(tail, sqlCode.end());
-          continue;
         }
-        break;
+
+        // Now set statementResult as the "result" to be either returned or step()-ed through
+        result = statementResult;
+      }
+
+      // Reduce `sqlCode` to include only what we haven't already executed.
+      sqlCode = kj::StringPtr(tail, sqlCode.end());
     }
 
-    return ownResult;
+    // After processing the entire input, throw if we never got a single result
+    SQLITE_REQUIRE(result != nullptr, "SQL code did not contain a statement.", sqlCode);
+    return ownSqlite(result);
   }
 }
 
