@@ -176,10 +176,15 @@ class ExecutionContext: public jsg::Object {
 public:
   void waitUntil(kj::Promise<void> promise);
   void passThroughOnException();
+  void abort(jsg::Lock& js, jsg::Optional<jsg::Value> reason);
 
-  JSG_RESOURCE_TYPE(ExecutionContext) {
+  JSG_RESOURCE_TYPE(ExecutionContext, CompatibilityFlags::Reader flags) {
     JSG_METHOD(waitUntil);
     JSG_METHOD(passThroughOnException);
+
+    if (flags.getWorkerdExperimental()) {
+      JSG_METHOD(abort);
+    }
   }
 };
 
