@@ -472,7 +472,7 @@ int SqliteDatabase::ingestSql(Regulator& regulator, kj::StringPtr sqlCode) {
   const char* start = sqlCode.begin();
   const char* tail = start;
 
-  // TODO(now): how to ensure we're in a real transaction block?
+  SQLITE_REQUIRE(sqlite3_get_autocommit(db) == 0, "sql.ingest must be run inside a transaction");
 
   // While there are still valid
   while (tail != sqlCode.end() && sqlite3_complete_inner(tail, 1)) {
@@ -485,7 +485,7 @@ int SqliteDatabase::ingestSql(Regulator& regulator, kj::StringPtr sqlCode) {
       // Fully step() through what's in 'result' before returning/processing the new statement
 
       SQLITE_REQUIRE(sqlite3_bind_parameter_count(result) == 0,
-                     "SqliteDatabase::ingestSql does not support parameter binding");
+                     "sql.ingest does not support parameter binding");
 
       // A single step is sufficient to execute the query, since we don't care about its output
       int err = sqlite3_step(result);

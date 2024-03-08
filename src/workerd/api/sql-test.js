@@ -99,28 +99,76 @@ async function test(storage) {
   )
 
   // Test partial query ingestion
-  assert.deepEqual(
-    sql.ingest(`SELECT 123; SELECT 456; -- trailing comment`),
-    23
-  )
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;    `), 23)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;`), 23)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 45`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 4`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT `), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELECT`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELEC`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SELE`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SEL`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; SE`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; S`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123; `), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123;`), 11)
-  assert.deepEqual(sql.ingest(`SELECT 123`), 0)
-  assert.deepEqual(sql.ingest(`SELECT 12`), 0)
-  assert.deepEqual(sql.ingest(`SELECT 1`), 0)
+  await storage.transaction(async () => {
+    assert.deepEqual(
+      sql.ingest(`SELECT 123; SELECT 456; -- trailing comment`),
+      23
+    )
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;    `), 23)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;`), 23)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT 45`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT 4`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT `), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELECT`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELEC`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SELE`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SEL`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; SE`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; S`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123; `), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123;`), 11)
+    assert.deepEqual(sql.ingest(`SELECT 123`), 0)
+    assert.deepEqual(sql.ingest(`SELECT 12`), 0)
+    assert.deepEqual(sql.ingest(`SELECT 1`), 0)
+  })
 
+  // Test that sql.ingest checks that it's in a transaction
+  assert.throws(
+    () => sql.ingest(`SELECT 1`),
+    /sql\.ingest must be run inside a transaction/
+  )
+
+  // Test execution of ingested queries by taking an input of 6 INSERT statements, that all
+  // add 6 rows of data, then splitting that into a bunch of chunks, then ingesting them all
+  {
+    sql.exec(`CREATE TABLE streaming(val TEXT);`)
+    const inserts = ['a', 'b', 'c', 'd', 'e', 'f']
+      .map(
+        (c) =>
+          `INSERT INTO streaming VALUES ('${c}a'),('${c}b'),('${c}c'),('${c}d'),('${c}e'),('${c}f');`
+      )
+      .join('\n')
+
+    // Use a chunk size 2, 4, 8, 16, ... characters
+    for (let length = 2; length < inserts.length; length *= length) {
+      // Start a transaction for the whole operation
+      await storage.transaction(async () => {
+        let buffer = ''
+        for (let offset = 0; offset < inserts.length; offset += length) {
+          // Simulate a single "chunk" arriving
+          const chunk = inserts.substring(offset, offset + length)
+
+          // Append the new chunk to the existing buffer
+          buffer += chunk
+
+          // Ingest any complete statements and snip those chars off the buffer
+          const charsConsumed = sql.ingest(buffer)
+          buffer = buffer.substring(charsConsumed)
+
+          // Simulate awaiting next chunk
+          await scheduler.wait(1)
+        }
+      })
+      // Verify exactly 36 rows were added
+      assert.deepEqual(Array.from(sql.exec(`SELECT count(*)FROM streaming`)), [
+        { 'count(*)': 36 },
+      ])
+      sql.exec(`DELETE FROM streaming`)
+      await scheduler.wait(1)
+    }
+    sql.exec(`DROP TABLE streaming;`)
+  }
 
   // Test count
   {
@@ -160,8 +208,14 @@ async function test(storage) {
   }
 
   // Empty statements
-  assert.throws(() => sql.exec(''), 'SQL code did not contain a statement')
-  assert.throws(() => sql.exec(';'), 'SQL code did not contain a statement')
+  assert.throws(
+    () => sql.exec(''),
+    /SQL code did not contain a complete statement/
+  )
+  assert.throws(
+    () => sql.exec(';'),
+    /SQL code did not contain a complete statement/
+  )
 
   // Invalid statements
   assert.throws(() => sql.exec('SELECT ;'), /syntax error at offset 7/)
