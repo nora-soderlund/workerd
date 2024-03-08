@@ -319,6 +319,9 @@ private:
     // The value was set by the app via put() or delete(), and we have not yet initiated a write
     // to disk. The entry is appended to `dirtyList` whenever entering this state.
     //
+    // Alternatively, the app requested a get, and while we aren't "writing" anything to storage,
+    // we will be scheduling a flush and modifying the Entry with the result.
+    //
     // Next state: CLEAN (if the flush succeeds) or NOT_IN_CACHE (if a new put()/delete()
     // overwrites this entry first).
     DIRTY,
@@ -482,9 +485,7 @@ private:
   // This object can only be manipulated in the thread that owns the specific actor that made
   // the request. That works out fine since CountedDelete only ever exists for dirty entries,
   // which won't be touched cross-thread by the LRU.
-  class CountedDeleteWaiter;
   struct CountedDelete final: public kj::Refcounted {
-  public:
     CountedDelete() = default;
     KJ_DISALLOW_COPY_AND_MOVE(CountedDelete);
     ~CountedDelete() noexcept(false) = default;
@@ -540,6 +541,8 @@ private:
 
   kj::HashSet<CountedDelete*> countedDeletes;
 
+  // A convenient object for holding all our `Entry`s that are waiting on the result of a get() or
+  // getMultiple() call. `get()` will only ever have 1 element in `entries`, unlike `getMultiple()`.
   class GetWaiter {
   public:
     explicit GetWaiter(ActorCache& cache, kj::Array<kj::Own<Entry>> entries)
@@ -558,7 +561,7 @@ private:
       }
     }
 
-    auto getEntries() {
+    kj::Array<kj::Own<Entry>> getEntries() {
       return KJ_MAP(entry, entries) { return kj::atomicAddRef(*entry); };
     }
 
@@ -684,7 +687,7 @@ private:
   typedef kj::Locked<kj::List<Entry, &Entry::link>> Lock;
 
   // Indicate that an entry was observed by a read operation and so should be moved to the end of
-  // the LRU queue (unless the options say otherwise).
+  // the LRU queue.
   void touchEntry(Lock& lock, Entry& entry);
 
   // TODO(soon) This function mostly belongs on the SharedLru, not the ActorCache. Notably,
@@ -748,14 +751,22 @@ private:
     size_t pairCount = 0;
     size_t wordCount = 0;
   };
+
+  // All the `Entry`s we want to read next flush.
   struct GetFlush {
+    // The actual entries we are flushing.
     kj::Vector<kj::Own<Entry>> entries;
+    // Metadata on each of the batches we will flush.
     kj::Vector<FlushBatch> batches;
   };
+
+  // All the `Entry`s we want to put next flush.
   struct PutFlush {
     kj::Vector<kj::Own<Entry>> entries;
     kj::Vector<FlushBatch> batches;
   };
+
+  // All the `Entry`s we want to delete (MutedDelete) next flush.
   struct MutedDeleteFlush {
     kj::Vector<kj::Own<Entry>> entries;
     kj::Vector<FlushBatch> batches;
@@ -774,8 +785,15 @@ private:
       PutFlush putFlush, MutedDeleteFlush mutedDeleteFlush,
       CountedDeleteFlushes countedDeleteFlushes, MaybeAlarmChange maybeAlarmChange);
 
+  // Single key get to storage.
+  // This updates our pre-existing Entry in `dirtyList`.
+  // The state will transition from UNKNOWN to PRESENT or ABSENT depending on value from storage.
   kj::Promise<void> syncGet(
       rpc::ActorStorage::Operations::Client client, kj::Own<Entry> entry);
+
+  // A collection of keys to read from storage.
+  // We update pre-existing `Entry`s that are in `dirtyList`.
+  // The state will transition from UNKNOWN to PRESENT or ABSENT depending on value from storage.
   kj::Promise<void> syncGets(
       rpc::ActorStorage::Operations::Client client, GetFlush getFlush);
 
@@ -921,6 +939,7 @@ private:
   // most-recently-used.
   kj::MutexGuarded<kj::List<Entry, &Entry::link>> cleanList;
 
+  // TODO(now): Is `list` supposed to be `cleanList`?
   // Total byte size of everything that is cached, including dirty values that are not in `list`.
   mutable std::atomic<size_t> size = 0;
 

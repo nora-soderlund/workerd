@@ -380,6 +380,9 @@ kj::OneOf<kj::Maybe<ActorCache::Value>, kj::Promise<kj::Maybe<ActorCache::Value>
   requireNotTerminal();
 
   auto lock = lru.cleanList.lockExclusive();
+  // We will try to find the Entry in cache, but if it's UNKNOWN (i.e. found in cache, but is an
+  // end marker for a prior list(), or wasn't found in cache at all) then we will schedule a storage
+  // read.
   auto entry = findInCache(lock, key, options);
   switch (entry->getValueStatus()) {
     case EntryValueStatus::PRESENT:
@@ -393,6 +396,10 @@ kj::OneOf<kj::Maybe<ActorCache::Value>, kj::Promise<kj::Maybe<ActorCache::Value>
         KJ_ASSERT(entries.size() == 1);
         return entries.front()->getValue();
       });
+      // Note that we don't have to add ourselves to cache (addReadResultToCache()) since
+      // findInCache() only gives us an UNKNOWN entry if our Entry is already in cache (with an
+      // UNKNOWN value because of a list) or if the Entry wasn't in cache, in which case we insert
+      // it into `currentValues`. `flush()` handles moving our Entry from `dirtyList` to `cleanList`.
     }
   }
 }
@@ -444,6 +451,7 @@ public:
     auto lock = cache.lru.cleanList.lockExclusive();
     auto entryIt = entries.begin();
     for (auto kv: params.getList()) {
+      // These `kv`s are the results of our getMultiple() from storage-proxy!
       KJ_ASSERT(kv.hasValue());  // values that don't exist aren't listed!
       auto key = kj::heapString(kv.getKey().asChars());
       bool entryIsFound = false;
@@ -462,6 +470,12 @@ public:
           entry.setAbsentValue();
         }
 
+        // TODO(now): Not sure I understand this. We seem to remove ourselves from the
+        // cleanList, although I suspect we already wouldn't be there? Then, if we're still
+        // in currentValues (which we would be...), we set our status to clean.
+        //
+        // All of this would happen in flushImpl() anyways as part of cleaning up after the
+        // flushPromise completes, no?
         finishEntry(lock, entry);
       }
       KJ_REQUIRE(entryIsFound);
@@ -505,6 +519,9 @@ private:
       lock->add(entry);
     } else {
       // Someone replaced us! We just need to not be dirty anymore.
+      //
+      // TODO(now): So, we're no longer in currentValues. Does this mean we need to
+      // addReadResultToCache()? Maybe something else?
     }
   }
 };
@@ -554,11 +571,13 @@ kj::OneOf<ActorCache::GetResultList, kj::Promise<ActorCache::GetResultList>>
 kj::Promise<void> ActorCache::syncGets(
     rpc::ActorStorage::Operations::Client client, GetFlush getFlush) {
   auto entryIt = getFlush.entries.begin();
+  // The collection of batch flush promises we'll be waiting on.
   kj::Vector<kj::Promise<void>> promises;
   for (size_t i = 0; i < getFlush.batches.size(); ++i) {
     auto [p, f] = kj::newPromiseAndFulfiller<void>();
     promises.add(kj::mv(p));
 
+    // We're going to do a getMultiple on this batch.
     auto batch = getFlush.batches[i];
     auto req = client.getMultipleRequest(capnp::MessageSize{
       .wordCount = batch.wordCount,
@@ -575,6 +594,9 @@ kj::Promise<void> ActorCache::syncGets(
       batchEntries.add(kj::atomicAddRef(entry));
     }
 
+    // The storage-proxy will stream results to us by calling `GetMultiStreamImpl::values()`,
+    // where we will update the `Entry`s in `batchEntries` with their values from storage (or set
+    // them ABSENT if they weren't found).
     rpc::ActorStorage::ListStream::Client streamClient =
         kj::heap<GetMultiStreamImpl>(*this, batchEntries.releaseAsArray(), kj::mv(f));
     req.setStream(streamClient);
@@ -1392,7 +1414,10 @@ kj::Own<ActorCache::Entry> ActorCache::findInCache(
   auto iter = map.seek(key);
   auto ordered = map.ordered();
 
+  // At first glance this is a bit awkward, but we're using the existing flush() infrastructure
+  // to process reads in batches.
   auto scheduleGet = [&](auto& entry) {
+    // We need to remove the Entry from the `cleanList`, since we are about to mark it DIRTY.
     removeEntry(lock, entry);
     entry.syncStatus = EntrySyncStatus::DIRTY;
     dirtyList.add(entry);
@@ -1405,6 +1430,15 @@ kj::Own<ActorCache::Entry> ActorCache::findInCache(
     Entry& entry = **iter;
     if (!options.noCache) {
       touchEntry(lock, entry);
+      // TODO(now): I'm generally a bit confused by `Entry::noCache`. It feels like it could be
+      // immutable, which could simplify things? Not sure what to do just yet, but this assignment
+      // below is redundant since we do it in touchEntry() above.
+      //
+      // For some background, this Entry exists from a previous read/write -- and the current Read is
+      // saying it's using cache. I think entry.noCache could only be true here if the previous
+      // operation was a write (i.e. the Entry is still DIRTY), because if it was a read with
+      // noCache it wouldn't have been cached? Does that mean I can write(noCache), then read(withCache)
+      // the same value and my prior write actually ends up cached? Seems weird...
       entry.noCache = false;
     }
 
@@ -1430,6 +1464,9 @@ kj::Own<ActorCache::Entry> ActorCache::findInCache(
     // We don't know whether this key exists in storage, let's schedule a read.
     auto entry =
         kj::atomicRefcounted<ActorCache::Entry>(*this, cloneKey(key), EntryValueStatus::UNKNOWN);
+    // TODO(now): Looking at the Entry::noCache again, here we're setting right after allocating.
+    // Feels like it could be immutable again if we just explicitly set upon initialization
+    // (unless I'm missing something).
     entry->noCache = options.noCache;
     map.insert(kj::atomicAddRef(*entry));
     scheduleGet(*entry);
