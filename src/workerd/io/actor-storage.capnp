@@ -23,19 +23,22 @@ interface ActorStorage @0xd7759d7fc87c08e4 {
   # Get the storage capability for the given stage of the pipeline, identified by its stable ID.
 
   interface Operations @0xb512f2ce1f544439 {
-    get @0 (key :Data) -> (value :Data);
-    list @3 (start :Data, end :Data, limit :Int32, reverse :Bool, stream :ListStream, prefix :Data);
-    put @1 (entries :List(KeyValue));
-    delete @2 (keys :List(Data)) -> (numDeleted :Int32);
+    # These operations are tagged with an ExpiryMsSinceUnixEpoch timestamp.
+    # This optional timestamp can be used to set a timeout after which the storage operation
+    # should no longer be executed, and an exception should be thrown instead.
+    get @0 (key :Data, ExpiryMsSinceUnixEpoch :UInt64) -> (value :Data);
+    list @3 (start :Data, end :Data, limit :Int32, reverse :Bool, stream :ListStream, prefix :Data, ExpiryMsSinceUnixEpoch :UInt64);
+    put @1 (entries :List(KeyValue), ExpiryMsSinceUnixEpoch :UInt64);
+    delete @2 (keys :List(Data), ExpiryMsSinceUnixEpoch :UInt64) -> (numDeleted :Int32);
 
-    getMultiple @4 (keys :List(Data), stream :ListStream);
-    deleteAll @5 () -> (numDeleted :Int32);
+    getMultiple @4 (keys :List(Data), stream :ListStream, ExpiryMsSinceUnixEpoch :UInt64);
+    deleteAll @5 (ExpiryMsSinceUnixEpoch :UInt64) -> (numDeleted :Int32);
 
-    rename @9 (entries :List(KeyRename)) -> (renamed :List(Data));
+    rename @9 (entries :List(KeyRename), ExpiryMsSinceUnixEpoch :UInt64) -> (renamed :List(Data));
 
-    getAlarm @6 () -> (scheduledTimeMs :Int64);
-    setAlarm @7 (scheduledTimeMs :Int64);
-    deleteAlarm @8 (timeToDeleteMs :Int64) -> (deleted :Bool);
+    getAlarm @6 (ExpiryMsSinceUnixEpoch :UInt64) -> (scheduledTimeMs :Int64);
+    setAlarm @7 (scheduledTimeMs :Int64, ExpiryMsSinceUnixEpoch :UInt64);
+    deleteAlarm @8 (timeToDeleteMs :Int64, ExpiryMsSinceUnixEpoch :UInt64) -> (deleted :Bool);
   }
 
   struct DbSettings {
@@ -51,7 +54,7 @@ interface ActorStorage @0xd7759d7fc87c08e4 {
     txn @0 (settings :DbSettings) -> (transaction :Transaction);
 
     interface Transaction extends(Operations) {
-      commit @0 ();
+      commit @0 (ExpiryMsSinceUnixEpoch :UInt64);
       rollback @1 ();
     }
   }
