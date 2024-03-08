@@ -19,6 +19,11 @@ jsg::Ref<SqlStorage::Cursor> SqlStorage::exec(jsg::Lock& js, kj::String querySql
   return jsg::alloc<Cursor>(*sqlite, regulator, querySql, kj::mv(bindings));
 }
 
+int SqlStorage::ingest(jsg::Lock& js, kj::String querySql) {
+  SqliteDatabase::Regulator& regulator = *this;
+  return sqlite->ingestSql(regulator, querySql);
+}
+
 jsg::Ref<SqlStorage::Statement> SqlStorage::prepare(jsg::Lock& js, kj::String query) {
   return jsg::alloc<Statement>(sqlite->prepare(*this, query));
 }

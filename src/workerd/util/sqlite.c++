@@ -386,10 +386,10 @@ kj::StringPtr SqliteDatabase::getCurrentQueryForDebug() {
   }
 }
 
-// Set up the regulator that will be used for authorizer callbacks while preparing this
-// statement.
 kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
     Regulator& regulator, kj::StringPtr sqlCode, uint prepFlags, Multi multi) {
+  // Set up the regulator that will be used for authorizer callbacks while preparing this
+  // statement.
   KJ_ASSERT(currentRegulator == nullptr, "recursive prepareSql()?");
   KJ_DEFER(currentRegulator = nullptr);
   currentRegulator = regulator;
@@ -413,14 +413,15 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
     const char* tail = sqlCode.begin();
 
     while (tail != sqlCode.end()) {
-      sqlite3_stmt* statementResult;
+      // Compile the next statement in the SQL
+      sqlite3_stmt* statementResult = nullptr;
       SQLITE_CALL(sqlite3_prepare_v3(db, sqlCode.begin(), sqlCode.size(), prepFlags, &statementResult, &tail));
 
-      // If is a real statement
+      // If it is a real statement
       if (statementResult != nullptr) {
         // And we've already seen a real statement
         if (result != nullptr) {
-          // Then fully step() through what's in 'result' before returning/processing the new statement
+          // Then execute what's in 'result' before returning/processing the new statement
 
           SQLITE_REQUIRE(sqlite3_bind_parameter_count(result) == 0,
                          "When executing multiple SQL statements in a single call, only the last statement "
@@ -437,6 +438,7 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
             }
           }
 
+          // A single step is sufficient to execute the query, since we don't care about its output
           int err = sqlite3_step(result);
           if (err == SQLITE_DONE) {
             // good
@@ -456,9 +458,51 @@ kj::Own<sqlite3_stmt> SqliteDatabase::prepareSql(
     }
 
     // After processing the entire input, throw if we never got a single result
-    SQLITE_REQUIRE(result != nullptr, "SQL code did not contain a statement.", sqlCode);
+    SQLITE_REQUIRE(result != nullptr, "SQL code did not contain a complete statement.", sqlCode);
     return ownSqlite(result);
   }
+}
+
+int SqliteDatabase::ingestSql(Regulator& regulator, kj::StringPtr sqlCode) {
+  // Set up the regulator that will be used for authorizer callbacks while preparing this
+  // statement.
+  KJ_ASSERT(currentRegulator == nullptr, "recursive prepareSql()?");
+  KJ_DEFER(currentRegulator = nullptr);
+  currentRegulator = regulator;
+  const char* start = sqlCode.begin();
+  const char* tail = start;
+
+  // TODO(now): how to ensure we're in a real transaction block?
+
+  // While there are still valid
+  while (tail != sqlCode.end() && sqlite3_complete_inner(tail, 1)) {
+    // Compile the next statement in the SQL
+    sqlite3_stmt* result = nullptr;
+    SQLITE_CALL(sqlite3_prepare_v3(db, sqlCode.begin(), sqlCode.size(), 0, &result, &tail));
+
+    // If it is a real statement
+    if (result != nullptr) {
+      // Fully step() through what's in 'result' before returning/processing the new statement
+
+      SQLITE_REQUIRE(sqlite3_bind_parameter_count(result) == 0,
+                     "SqliteDatabase::ingestSql does not support parameter binding");
+
+      // A single step is sufficient to execute the query, since we don't care about its output
+      int err = sqlite3_step(result);
+      if (err == SQLITE_DONE) {
+        // good
+      } else if (err == SQLITE_ROW) {
+        // Intermediate statement returned results. We will discard.
+      } else {
+        SQLITE_CALL_FAILED("sqlite3_step()", err);
+      }
+    }
+
+    sqlCode = kj::StringPtr(tail, sqlCode.end());
+  }
+
+  // Return how many characters were processed
+  return tail - start;
 }
 
 bool SqliteDatabase::isAuthorized(int actionCode,

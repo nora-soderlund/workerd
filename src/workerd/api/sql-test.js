@@ -6,6 +6,7 @@ import * as assert from 'node:assert'
 
 async function test(storage) {
   const sql = storage.sql
+
   // Test numeric results
   const resultNumber = [...sql.exec('SELECT 123')]
   assert.equal(resultNumber.length, 1)
@@ -60,6 +61,67 @@ async function test(storage) {
     assert.equal(result[2]['value'], 3)
   }
 
+  // Test multiple statements in .exec
+  {
+    const result = Array.from(sql.exec(`SELECT 123; SELECT 456;`))
+    assert.deepEqual(result, [{ 456: 456 }])
+  }
+  {
+    const result = Array.from(
+      sql.exec(`SELECT 123; SELECT 456; -- trailing comment`)
+    )
+    assert.deepEqual(result, [{ 456: 456 }])
+  }
+  {
+    const result = Array.from(
+      sql.exec(
+        `SELECT 123; SELECT 456; -- trailing comment\n-- with whitespace\n `
+      )
+    )
+    assert.deepEqual(result, [{ 456: 456 }])
+  }
+  {
+    const result = Array.from(
+      sql.exec(`SELECT 123; --middle comment\n SELECT 456;`)
+    )
+    assert.deepEqual(result, [{ 456: 456 }])
+  }
+  {
+    const result = Array.from(
+      sql.exec(`-- leading comment\n;SELECT 123; SELECT 456;`)
+    )
+    assert.deepEqual(result, [{ 456: 456 }])
+  }
+  assert.throws(() => sql.exec('\n'), 'SQL code did not contain a statement')
+  assert.throws(
+    () => sql.exec('\n-- comment'),
+    'SQL code did not contain a statement'
+  )
+
+  // Test partial query ingestion
+  assert.deepEqual(
+    sql.ingest(`SELECT 123; SELECT 456; -- trailing comment`),
+    23
+  )
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;    `), 23)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456;`), 23)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 456`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 45`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT 4`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT `), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELECT`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELEC`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SELE`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SEL`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; SE`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; S`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123; `), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123;`), 11)
+  assert.deepEqual(sql.ingest(`SELECT 123`), 0)
+  assert.deepEqual(sql.ingest(`SELECT 12`), 0)
+  assert.deepEqual(sql.ingest(`SELECT 1`), 0)
+
+
   // Test count
   {
     const result = [
@@ -92,7 +154,7 @@ async function test(storage) {
 
   // Test math functions enabled
   {
-    const result = [...sql.exec("SELECT cos(0)")]
+    const result = [...sql.exec('SELECT cos(0)')]
     assert.equal(result.length, 1)
     assert.equal(result[0]['cos(0)'], 1)
   }
