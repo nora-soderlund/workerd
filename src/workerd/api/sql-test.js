@@ -133,21 +133,15 @@ async function test(storage) {
   // add 6 rows of data, then splitting that into a bunch of chunks, then ingesting them all
   {
     sql.exec(`CREATE TABLE streaming(val TEXT);`)
-    const inserts = ['a', 'b', 'c', 'd', 'e', 'f']
-      .map(
-        (c) =>
-          `INSERT INTO streaming VALUES ('${c}a'),('${c}b'),('${c}c'),('${c}d'),('${c}e'),('${c}f');`
-      )
-      .join('\n')
 
     // Use a chunk size 2, 4, 8, 16, ... characters
-    for (let length = 2; length < inserts.length; length *= length) {
+    for (let length = 2; length < INSERT_36_ROWS.length; length *= length) {
       // Start a transaction for the whole operation
       await storage.transaction(async () => {
         let buffer = ''
-        for (let offset = 0; offset < inserts.length; offset += length) {
+        for (let offset = 0; offset < INSERT_36_ROWS.length; offset += length) {
           // Simulate a single "chunk" arriving
-          const chunk = inserts.substring(offset, offset + length)
+          const chunk = INSERT_36_ROWS.substring(offset, offset + length)
 
           // Append the new chunk to the existing buffer
           buffer += chunk
@@ -1038,6 +1032,35 @@ async function testForeignKeys(storage) {
   }
 }
 
+async function testStreamingIngestion(request, storage) {
+  const { sql } = storage
+
+  sql.exec(`CREATE TABLE streaming(val TEXT);`)
+
+  const reader = request.body.getReader()
+  const decoder = new TextDecoder()
+
+  await storage.transaction(async () => {
+    let buffer = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+
+      // Append the new chunk to the existing buffer
+      buffer += chunk
+
+      // Ingest any complete statements and snip those chars off the buffer
+      const charsConsumed = sql.ingest(buffer)
+      buffer = buffer.substring(charsConsumed)
+    }
+  })
+  // Verify exactly 36 rows were added
+  assert.deepEqual(Array.from(sql.exec(`SELECT count(*)FROM streaming`)), [
+    { 'count(*)': 36 },
+  ])
+}
+
 export class DurableObjectExample {
   constructor(state, env) {
     this.state = state
@@ -1067,6 +1090,9 @@ export class DurableObjectExample {
     } else if (req.url.endsWith('/sql-test-io-stats')) {
       await testIoStats(this.state.storage)
       return Response.json({ ok: true })
+    } else if (req.url.endsWith('/streaming-ingestion')) {
+      await testStreamingIngestion(req, this.state.storage)
+      return Response.json({ ok: true })
     }
 
     throw new Error('unknown url: ' + req.url)
@@ -1079,8 +1105,8 @@ export default {
     let obj = env.ns.get(id)
 
     // Now let's test persistence through breakage and atomic write coalescing.
-    let doReq = async (path) => {
-      let resp = await obj.fetch('http://foo/' + path)
+    let doReq = async (path, init = {}) => {
+      let resp = await obj.fetch('http://foo/' + path, init)
       return await resp.json()
     }
 
@@ -1089,6 +1115,27 @@ export default {
 
     // Test SQL IO stats
     assert.deepEqual(await doReq('sql-test-io-stats'), { ok: true })
+
+    // Test SQL streaming ingestion
+    assert.deepEqual(
+      await doReq('streaming-ingestion', {
+        method: 'POST',
+        body: new ReadableStream({
+          async start(controller) {
+            const data = INSERT_36_ROWS.match(new RegExp('.{1,100}', 'g')) // splits into 5 chunks
+
+            // Send each chunk with a wait of 1ms in between
+            for (const chunk of data) {
+              controller.enqueue(new TextEncoder().encode(chunk))
+              await scheduler.wait(1)
+            }
+
+            controller.close()
+          },
+        }),
+      }),
+      { ok: true }
+    )
 
     // Test defer_foreign_keys (explodes the DO)
     await assert.rejects(async () => {
@@ -1114,3 +1161,10 @@ export default {
     assert.equal(await doReq('increment'), 3)
   },
 }
+
+const INSERT_36_ROWS = ['a', 'b', 'c', 'd', 'e', 'f']
+  .map(
+    (c) =>
+      `INSERT INTO streaming VALUES ('${c}a'),('${c}b'),('${c}c'),('${c}d'),('${c}e'),('${c}f');`
+  )
+  .join(' ')

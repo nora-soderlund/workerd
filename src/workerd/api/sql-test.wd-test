@@ -11,7 +11,7 @@ const config :Workerd.Config = (
 
 const mainWorker :Workerd.Worker = (
   compatibilityDate = "2022-09-16",
-  compatibilityFlags = ["experimental", "nodejs_compat"],
+  compatibilityFlags = ["experimental", "nodejs_compat", "streams_enable_constructors"],
 
   modules = [
     (name = "worker", esModule = embed "sql-test.js"),
